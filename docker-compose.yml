@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  product-monitor:
+    image: ghcr.io/jigarshah192/product-availability-check:latest
+    container_name: product-availability-monitor
+    restart: unless-stopped
+    environment:
+      # Telegram Configuration (required)
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      
+      # Check interval in seconds (default: 300 = 5 minutes)
+      - INTERVAL=${INTERVAL:-60}
+      
+      # Daily report hour in IST (24-hour format)
+      - DAILY_REPORT_HOUR=${DAILY_REPORT_HOUR:-11}
+      
+      # Products to monitor (JSON array)
+      - PRODUCTS=${PRODUCTS}
+    
+    # Enable logging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

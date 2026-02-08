@@ -4,12 +4,28 @@ import time
 import os
 import json
 import re
+import logging
+import sys
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Force stdout to be unbuffered for Docker
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 # Configuration from Environment Variables
 # PRODUCTS format: [{"name": "Product Name", "url": "https://...", "out_of_stock_keywords": ["Coming Soon"]}]
@@ -46,7 +62,7 @@ def get_products() -> list:
             if isinstance(products, list) and len(products) > 0:
                 return products
         except json.JSONDecodeError as e:
-            print(f"Error parsing PRODUCTS JSON: {e}")
+            logger.error(f"Error parsing PRODUCTS JSON: {e}")
     
     # Fallback to single product URL
     if PRODUCT_URL:
@@ -56,13 +72,13 @@ def get_products() -> list:
             "out_of_stock_keywords": DEFAULT_OUT_OF_STOCK_KEYWORDS
         }]
     
-    print("No products configured. Set PRODUCTS or PRODUCT_URL environment variable.")
+    logger.error("No products configured. Set PRODUCTS or PRODUCT_URL environment variable.")
     return []
 
 
 def send_telegram_message(text: str):
     if not TOKEN or not CHAT_ID:
-        print("Telegram TOKEN or CHAT_ID not set, skipping notification.")
+        logger.warning("Telegram TOKEN or CHAT_ID not set, skipping notification.")
         return
     url = (
         f"https://api.telegram.org/bot{TOKEN}/sendMessage?"
@@ -71,9 +87,9 @@ def send_telegram_message(text: str):
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
-        print("Notification sent!")
+        logger.info("Telegram notification sent successfully")
     except Exception as e:
-        print(f"Error sending Telegram message: {e}")
+        logger.error(f"Error sending Telegram message: {e}")
 
 
 def check_shopify_json_availability(html: str) -> tuple[bool, bool]:
@@ -140,14 +156,14 @@ def is_in_stock(html: bytes, out_of_stock_keywords: list = None) -> bool:
     # Method 1: Check Shopify JSON data (most reliable for Shopify sites)
     is_shopify, is_available = check_shopify_json_availability(html_str)
     if is_shopify:
-        print(f"  📦 Shopify detected - Product available: {is_available}")
+        logger.debug(f"Shopify detected - Product available: {is_available}")
         return is_available
     
     # Method 2: Check for out-of-stock keywords in page text
     full_text = soup.get_text(separator=" ", strip=True)
     for keyword in out_of_stock_keywords:
         if keyword.lower() in full_text.lower():
-            print(f"  🔍 Found out-of-stock keyword: '{keyword}'")
+            logger.debug(f"Found out-of-stock keyword: '{keyword}'")
             return False
 
     # Method 3: Look for add-to-cart button (fallback)
@@ -159,12 +175,12 @@ def is_in_stock(html: bytes, out_of_stock_keywords: list = None) -> bool:
     if add_to_cart:
         # Check if button is disabled
         if add_to_cart.get('disabled') or 'disabled' in add_to_cart.get('class', []):
-            print("  🔍 Add to cart button is disabled")
+            logger.debug("Add to cart button is disabled")
             return False
         return True
     
     # If no clear indicator, assume out of stock to avoid false positives
-    print("  ⚠️ No clear stock indicator found, assuming out of stock")
+    logger.debug("No clear stock indicator found, assuming out of stock")
     return False
 
 
@@ -183,23 +199,23 @@ def check_stock(product: dict) -> bool:
     keywords = product.get("out_of_stock_keywords", DEFAULT_OUT_OF_STOCK_KEYWORDS)
     
     if not url:
-        print(f"No URL configured for product: {name}")
+        logger.error(f"No URL configured for product: {name}")
         return False
     
     try:
-        print(f"🔄 Checking: {name}")
+        logger.info(f"Checking: {name}")
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
 
         if is_in_stock(response.content, keywords):
             msg = f"✅ {name} is IN STOCK!\n🔗 {url}"
             send_telegram_message(msg)
-            print(f"  ✅ IN STOCK!")
+            logger.info(f"✅ {name} is IN STOCK!")
             return True
         else:
-            print(f"  ❌ Not in stock yet")
+            logger.info(f"❌ {name} - Not in stock")
     except Exception as e:
-        print(f"  ❌ Error: {e}")
+        logger.error(f"Error checking {name}: {e}")
     return False
 
 
@@ -287,30 +303,31 @@ def send_daily_report():
     report += f"🔄 Checking every {CHECK_INTERVAL // 60} min"
     
     send_telegram_message(report)
-    print(f"📊 Daily report sent at {now.strftime('%Y-%m-%d %H:%M:%S')} IST")
+    logger.info(f"Daily report sent at {now.strftime('%Y-%m-%d %H:%M:%S')} IST")
 
 
 if __name__ == "__main__":
     products = get_products()
-    print("=" * 60)
-    print("🛒 PRODUCT AVAILABILITY MONITOR")
-    print("=" * 60)
-    print(f"📋 Monitoring {len(products)} product(s):")
+    
+    logger.info("=" * 50)
+    logger.info("PRODUCT AVAILABILITY MONITOR STARTED")
+    logger.info("=" * 50)
+    logger.info(f"Monitoring {len(products)} product(s)")
     for p in products:
-        print(f"   • {p.get('name', 'Unknown')}")
-        print(f"     {p.get('url', 'No URL')}")
-    print(f"⏱️  Check interval: {CHECK_INTERVAL} seconds")
-    print(f"📊 Daily report: {DAILY_REPORT_HOUR}:00 IST")
-    print(f"📱 Telegram: {'Configured' if TOKEN and CHAT_ID else 'Not configured'}")
-    print("=" * 60)
+        logger.info(f"  - {p.get('name', 'Unknown')}: {p.get('url', 'No URL')}")
+    logger.info(f"Check interval: {CHECK_INTERVAL} seconds")
+    logger.info(f"Daily report: {DAILY_REPORT_HOUR}:00 IST")
+    logger.info(f"Telegram: {'Configured' if TOKEN and CHAT_ID else 'Not configured'}")
+    logger.info("=" * 50)
     
     # Track last daily report date to avoid duplicates
     last_report_date = ""
+    check_count = 0
     
     while True:
         now = get_current_ist_time()
-        print(f"\n🕐 Checking at {now.strftime('%Y-%m-%d %H:%M:%S')} IST")
-        print("-" * 40)
+        check_count += 1
+        logger.info(f"[Check #{check_count}] Starting at {now.strftime('%Y-%m-%d %H:%M:%S')} IST")
         
         # Check if daily report should be sent
         if should_send_daily_report(last_report_date):
@@ -319,5 +336,6 @@ if __name__ == "__main__":
         
         # Check all products for stock
         check_all_products()
-        print(f"\n⏳ Next check in {CHECK_INTERVAL} seconds...")
+        logger.info(f"[Check #{check_count}] Complete. Next check in {CHECK_INTERVAL} seconds")
         time.sleep(CHECK_INTERVAL)
+
